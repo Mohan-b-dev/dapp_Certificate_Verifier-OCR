@@ -68,5 +68,18 @@
     "issuer": "0xfd46cFb5406CEF5Be1893464E37ac21b89DC63C5",
     "issueDate": "1761541896",
     "filePath": "uploads\\Qmcto2mLSEWdqA3GjLfgLMbVBCCeoqkyCnbqf17v4JRAi1.pdf"
+  },
+  "institutions": {
+    "0x2fbd3e912b044f676f164dc7ed5fa44e0ff79892": {
+      "institution": {
+        "companyId": "INST001",
+        "companyName": "mohan",
+        "location": "chennai",
+        "email": "test1@gmail.com",
+        "phone": "+91 9840356329"
+      },
+      "ipfsHash": "QmXzuy9xr4a4f8Zt8pwR66JQMyt726QBfiwTVNKTjaX5ZP",
+      "registeredAt": "2025-10-28T15:41:32.167Z"
+    }
   }
 }
