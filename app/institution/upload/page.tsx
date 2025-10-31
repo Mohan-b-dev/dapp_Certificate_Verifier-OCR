@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, type ChangeEvent } from "react";
+import React, { useState, useEffect, ChangeEvent } from "react";
 import InstitutionForm from "../components/InstitutionForm";
 
 type DetectedOption = {
@@ -17,7 +17,6 @@ type Institution = {
   phone?: string;
 };
 
-// SVG Spinner Component
 const Spinner = () => (
   <svg
     className="animate-spin h-6 w-6 text-current"
@@ -52,109 +51,99 @@ export default function UploadPage() {
     []
   );
   const [institution, setInstitution] = useState<Institution | null>(null);
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
+  const [isWalletConnected, setIsWalletConnected] = useState(false);
 
-  // -----------------------------------------------------------------
-  // 1. Institution form callback
-  // -----------------------------------------------------------------
-  const handleInstitutionSubmit = (data: Institution) => {
-    setInstitution(data);
-    setMessage("Institution details saved – now upload the certificate PDF");
-
-    // Try to auto-register the institution to the connected wallet (best-effort)
-    (async () => {
-      try {
-        if (typeof window !== "undefined" && (window as any).ethereum) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const eth = (window as any).ethereum;
-          // Request accounts (will prompt if not already connected)
-          const accounts = await eth.request({ method: "eth_requestAccounts" });
-          const address = accounts && accounts[0];
-          if (!address) return;
-
-          const message = JSON.stringify(data);
-          let signature = null;
-          try {
-            signature = await eth.request({
-              method: "personal_sign",
-              params: [message, address],
-            });
-          } catch (sigErr) {
-            console.warn(
-              "User declined signing or personal_sign failed:",
-              sigErr
-            );
-          }
-
-          if (signature) {
-            try {
-              const backendBase =
-                process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001";
-              await fetch(`${backendBase}/api/register-institution`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  institution: data,
-                  address,
-                  signature,
-                  pin: true,
-                }),
-              });
-              // Informational only; registration failure shouldn't block the user
-              console.log("Institution registration attempted for", address);
-            } catch (err) {
-              console.warn("Failed to register institution with backend:", err);
-            }
-          }
-        }
-      } catch (err) {
-        console.warn("Auto-register institution error:", err);
-      }
-    })();
-  };
-
-  // On mount: try to auto-fill from a connected wallet's registered institution
+  // Connect wallet on mount
   useEffect(() => {
-    (async () => {
-      try {
-        if (typeof window !== "undefined" && (window as any).ethereum) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const eth = (window as any).ethereum;
-          let accounts = [];
-          try {
-            accounts = await eth.request({ method: "eth_accounts" });
-          } catch {
-            // ignore
-          }
-          if (!accounts || accounts.length === 0) return;
-          const address = accounts[0];
-          const backendBase =
-            process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001";
-          try {
-            const resp = await fetch(
-              `${backendBase}/api/institution/${address}`
-            );
-            if (resp.ok) {
-              const json = await resp.json();
-              if (json && json.institution) {
-                setInstitution(json.institution);
-                setMessage(
-                  "Institution auto-filled from registered wallet mapping."
-                );
-              }
-            }
-          } catch (err) {
-            console.warn("Failed to fetch institution mapping:", err);
-          }
-        }
-      } catch (err) {
-        console.warn("Auto-fill institution error:", err);
-      }
-    })();
+    connectWallet();
   }, []);
 
-  // -----------------------------------------------------------------
-  // 2. File change to OCR
-  // -----------------------------------------------------------------
+  const connectWallet = async () => {
+    try {
+      if (typeof window !== "undefined" && (window as any).ethereum) {
+        const eth = (window as any).ethereum;
+        const accounts = await eth.request({ method: "eth_requestAccounts" });
+        if (accounts && accounts[0]) {
+          setWalletAddress(accounts[0]);
+          setIsWalletConnected(true);
+          console.log("Connected wallet:", accounts[0]);
+
+          // Try to load institution for this wallet
+          await loadInstitutionForWallet(accounts[0]);
+        }
+      } else {
+        setMessage(
+          "⚠️ MetaMask not detected. Please install MetaMask to continue."
+        );
+      }
+    } catch (error) {
+      console.error("Wallet connection error:", error);
+      setMessage("Failed to connect wallet. Please try again.");
+    }
+  };
+
+  const loadInstitutionForWallet = async (address: string) => {
+    try {
+      const backendBase =
+        process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001";
+      const resp = await fetch(`${backendBase}/api/institution/${address}`);
+      if (resp.ok) {
+        const json = await resp.json();
+        if (json && json.institution) {
+          setInstitution(json.institution);
+          setMessage(`✅ Institution loaded: ${json.institution.companyName}`);
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to fetch institution mapping:", err);
+    }
+  };
+
+  const handleInstitutionSubmit = async (data: Institution) => {
+    if (!walletAddress) {
+      setMessage("❌ Please connect your wallet first");
+      return;
+    }
+
+    try {
+      // Sign the institution data
+      const messageStr = JSON.stringify(data);
+      const eth = (window as any).ethereum;
+      const signature = await eth.request({
+        method: "personal_sign",
+        params: [messageStr, walletAddress],
+      });
+
+      // Register institution with backend - FIXED LINE 121 BELOW
+      const backendBase =
+        process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001";
+      const response = await fetch(`${backendBase}/api/register-institution`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          institution: data,
+          address: walletAddress,
+          signature,
+          pin: true,
+        }),
+      });
+
+      const result = await response.json();
+      if (result.success) {
+        setInstitution(data);
+        setMessage(
+          `✅ Institution registered and authorized on blockchain!\nYou can now upload certificates.`
+        );
+      } else {
+        setMessage(`❌ Registration failed: ${result.error}`);
+      }
+    } catch (error: any) {
+      console.error("Institution registration error:", error);
+      setMessage(`❌ Registration failed: ${error.message || "Unknown error"}`);
+    }
+  };
+
   const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
     if (!selectedFile) return;
@@ -180,9 +169,6 @@ export default function UploadPage() {
     await extractCertificateIdWithAI(selectedFile);
   };
 
-  // -----------------------------------------------------------------
-  // 3. OCR + PDF to Image to Tesseract
-  // -----------------------------------------------------------------
   const extractCertificateIdWithAI = async (pdfFile: File) => {
     setIsExtracting(true);
     try {
@@ -190,28 +176,21 @@ export default function UploadPage() {
       if (!images || images.length === 0)
         throw new Error("Could not process PDF");
 
-      const { createWorker } = await import("tesseract.js");
-      const worker = await createWorker("eng", 1, {
-        logger: (m) => {
-          if (m.status === "recognizing text") {
-            setMessage(`AI analyzing: ${Math.round(m.progress * 100)}%`);
-          }
-        },
-      });
+      const tesseract: any = await import("tesseract.js");
+      const createWorker = tesseract.createWorker as any;
+      const worker: any = await createWorker();
 
-      await worker.setParameters({
+      await worker.setParameters?.({
         tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/-:. ",
-        tessedit_pageseg_mode: "1",
+        tessedit_pageseg_mode: 1,
       });
 
       let allText = "";
       for (let i = 0; i < Math.min(images.length, 2); i++) {
-        const {
-          data: { text },
-        } = await worker.recognize(images[i]);
-        allText += "\n" + text;
+        const { data } = await worker.recognize(images[i]);
+        allText += "\n" + (data?.text || "");
       }
-      await worker.terminate();
+      await worker.terminate?.();
 
       console.log("AI Extracted Text:", allText);
 
@@ -239,10 +218,10 @@ export default function UploadPage() {
 
   const convertPDFToImages = async (pdfFile: File) => {
     try {
-      const pdfjsLib = await import("pdfjs-dist/webpack");
+      const pdfjsLib: any = await import("pdfjs-dist/webpack");
       const arrayBuffer = await pdfFile.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-      const images = [];
+      const images: string[] = [];
       const numPages = Math.min(pdf.numPages, 2);
 
       for (let pageNum = 1; pageNum <= numPages; pageNum++) {
@@ -267,7 +246,7 @@ export default function UploadPage() {
     const cleanText = text.replace(/\s+/g, " ").trim();
     const candidates: DetectedOption[] = [];
 
-    const patterns = [
+    const patterns: { regex: RegExp; confidence: number; name: string }[] = [
       {
         regex: /(?:certificate\s*(?:id|no|number|#)[:\s]*)([\w\/\-]{4,20})/gi,
         confidence: 95,
@@ -326,7 +305,7 @@ export default function UploadPage() {
     ];
 
     patterns.forEach((pattern) => {
-      let match;
+      let match: RegExpExecArray | null;
       const regex = new RegExp(pattern.regex);
       while ((match = regex.exec(cleanText)) !== null) {
         const potentialId = (match[1] || match[0]).trim();
@@ -363,7 +342,7 @@ export default function UploadPage() {
     });
 
     const uniqueCandidates: DetectedOption[] = [];
-    const seenIds = new Set();
+    const seenIds = new Set<string>();
     candidates
       .sort((a, b) => b.confidence - a.confidence)
       .forEach((candidate) => {
@@ -377,14 +356,17 @@ export default function UploadPage() {
     return uniqueCandidates.slice(0, 5);
   };
 
-  // -----------------------------------------------------------------
-  // 4. Upload to Blockchain
-  // -----------------------------------------------------------------
   const handleUpload = async () => {
+    if (!walletAddress) {
+      setMessage("❌ Please connect your wallet first");
+      return;
+    }
+
     if (!file) {
       setMessage("Please select a PDF file first.");
       return;
     }
+
     if (!certificateId.trim()) {
       setMessage("Please enter a Certificate ID.");
       return;
@@ -396,6 +378,7 @@ export default function UploadPage() {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("certificateId", certificateId.trim());
+    formData.append("issuerAddress", walletAddress);
 
     try {
       const backendBase =
@@ -408,7 +391,7 @@ export default function UploadPage() {
 
       if (result.success) {
         setMessage(
-          `Success! Certificate issued on blockchain!\n\nCertificate ID: ${result.certificateId}\nIPFS Hash: ${result.ipfsHash}\nBlockchain: Transaction confirmed`
+          `✅ Success! Certificate issued on blockchain!\n\nCertificate ID: ${result.certificateId}\nIPFS Hash: ${result.ipfsHash}\nInstitution: ${result.institution}\nBlockchain: Transaction confirmed`
         );
 
         setFile(null);
@@ -420,25 +403,21 @@ export default function UploadPage() {
         ) as HTMLInputElement | null;
         if (inputEl) inputEl.value = "";
       } else {
-        setMessage(`Upload failed: ${result.error}`);
+        setMessage(`❌ Upload failed: ${result.error}`);
       }
     } catch (error) {
       console.error("Upload error:", error);
-      setMessage("Network error. Please try again.");
+      setMessage("❌ Network error. Please try again.");
     } finally {
       setIsLoading(false);
     }
   };
 
-  // -----------------------------------------------------------------
-  // 5. Render UI
-  // -----------------------------------------------------------------
   return (
     <div className="min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
       <div className="max-w-4xl mx-auto">
-        {/* === HEADER === */}
         <div className="text-center mb-12">
-          <div className="text-7xl mb-4 text-black">Certificate</div>
+          <div className="text-7xl mb-4 text-black">🎓</div>
           <h1 className="text-4xl md:text-5xl font-extrabold text-black mb-3">
             AI‑Powered Certificate Issuance
           </h1>
@@ -447,18 +426,44 @@ export default function UploadPage() {
           </p>
         </div>
 
-        {/* === INSTITUTION FORM OR UPLOAD SECTION === */}
+        {/* Wallet Status */}
+        {!isWalletConnected ? (
+          <div className="bg-yellow-50 border-2 border-yellow-400 rounded-2xl p-8 mb-8 text-center">
+            <div className="text-5xl mb-4">⚠️</div>
+            <p className="text-xl font-bold text-black mb-4">
+              Wallet Not Connected
+            </p>
+            <button
+              onClick={connectWallet}
+              className="px-8 py-3 bg-black text-white font-bold rounded-xl hover:shadow-xl transition"
+            >
+              Connect MetaMask
+            </button>
+          </div>
+        ) : (
+          <div className="bg-green-50 border-2 border-green-400 rounded-2xl p-6 mb-8 flex justify-between items-center">
+            <div>
+              <p className="text-sm font-bold text-green-900">
+                Connected Wallet
+              </p>
+              <p className="text-xs font-mono text-green-800">
+                {walletAddress}
+              </p>
+            </div>
+            <div className="text-3xl">✅</div>
+          </div>
+        )}
+
+        {/* Institution Form or Upload Section */}
         {!institution ? (
           <div className="bg-white rounded-3xl shadow-xl p-8 md:p-10 border border-gray-300">
             <h2 className="text-2xl md:text-3xl font-bold text-black mb-8 flex items-center">
-              <span className="mr-3 text-3xl">Building</span> Institution
-              Details
+              <span className="mr-3 text-3xl">🏢</span> Register Institution
             </h2>
             <InstitutionForm onSubmit={handleInstitutionSubmit} />
           </div>
         ) : (
           <>
-            {/* === INSTITUTION CONFIRMED BADGE === */}
             <div className="mb-8 p-6 bg-gray-100 rounded-2xl border border-gray-400 shadow-md flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
                 <p className="text-xl font-bold text-black">
@@ -471,13 +476,13 @@ export default function UploadPage() {
                   {institution.location}
                 </p>
                 {institution.email && (
-                  <p className="text-sm text-gray-700 mt-1 flex items-center">
-                    <span className="mr-1">Email</span> {institution.email}
+                  <p className="text-sm text-gray-700 mt-1">
+                    📧 {institution.email}
                   </p>
                 )}
                 {institution.phone && (
-                  <p className="text-sm text-gray-700 flex items-center">
-                    <span className="mr-1">Phone</span> {institution.phone}
+                  <p className="text-sm text-gray-700">
+                    📱 {institution.phone}
                   </p>
                 )}
               </div>
@@ -492,14 +497,11 @@ export default function UploadPage() {
               </button>
             </div>
 
-            {/* === CERTIFICATE UPLOAD CARD === */}
             <div className="bg-white rounded-3xl shadow-xl p-8 md:p-10 border border-gray-300">
               <h3 className="text-2xl font-bold text-black mb-8 flex items-center">
-                <span className="mr-3 text-3xl">Document</span> Upload
-                Certificate PDF
+                <span className="mr-3 text-3xl">📄</span> Upload Certificate PDF
               </h3>
 
-              {/* File Drop Zone */}
               <div
                 className="relative border-4 border-dashed border-gray-400 rounded-2xl p-12 text-center bg-gray-50 transition-all hover:border-black hover:shadow-xl cursor-pointer group"
                 onClick={() => document.getElementById("file-upload")?.click()}
@@ -513,7 +515,7 @@ export default function UploadPage() {
                 />
                 {file ? (
                   <div className="text-green-700">
-                    <div className="text-7xl mb-4">Check</div>
+                    <div className="text-7xl mb-4">✓</div>
                     <p className="text-xl font-bold text-black">{file.name}</p>
                     <p className="text-base text-green-700 mt-2">
                       {isExtracting
@@ -523,7 +525,7 @@ export default function UploadPage() {
                   </div>
                 ) : (
                   <div className="text-gray-700 group-hover:text-black transition-colors">
-                    <div className="text-7xl mb-4">Paperclip</div>
+                    <div className="text-7xl mb-4">📎</div>
                     <p className="text-xl font-bold">Drop your PDF here</p>
                     <p className="text-base text-gray-600 mt-2">
                       or click to browse — AI auto‑detects Certificate ID
@@ -532,7 +534,6 @@ export default function UploadPage() {
                 )}
               </div>
 
-              {/* Certificate ID Input */}
               <div className="mt-10">
                 <label className="block text-base font-bold text-black mb-3">
                   Certificate ID
@@ -570,65 +571,39 @@ export default function UploadPage() {
                 )}
               </div>
 
-              {/* OCR Detected Options (dropdown) */}
               {extractedOptions.length > 0 && (
                 <div className="mt-8 p-6 bg-gray-100 rounded-xl border-2 border-gray-300">
                   <p className="text-base font-bold text-black mb-4">
                     Detected IDs (choose one or edit manually):
                   </p>
-                  <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
-                    <select
-                      value={certificateId}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setCertificateId(val);
-                        const sel = extractedOptions.find((o) => o.id === val);
-                        if (sel) setConfidence(sel.confidence);
-                      }}
-                      className="w-full sm:w-1/2 px-4 py-3 rounded-lg border-2 border-gray-300 bg-white text-lg font-mono"
-                    >
-                      {extractedOptions.map((opt, idx) => (
-                        <option key={idx} value={opt.id}>
-                          {opt.id} — {opt.confidence}%
-                        </option>
-                      ))}
-                    </select>
-
-                    <div className="text-sm text-gray-700">
-                      {certificateId ? (
-                        (() => {
-                          const current =
-                            extractedOptions.find(
-                              (o) => o.id === certificateId
-                            ) || extractedOptions[0];
-                          return (
-                            <div>
-                              <div className="font-mono font-bold">
-                                {current.id}
-                              </div>
-                              <div className="text-xs text-gray-600">
-                                {current.confidence}% — {current.pattern}
-                              </div>
-                              <div className="mt-2 text-xs text-gray-500">
-                                Context: {current.context}
-                              </div>
-                            </div>
-                          );
-                        })()
-                      ) : (
-                        <div className="text-xs text-gray-500">
-                          Select an AI-detected ID or type your own above.
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                  <select
+                    value={certificateId}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setCertificateId(val);
+                      const sel = extractedOptions.find((o) => o.id === val);
+                      if (sel) setConfidence(sel.confidence);
+                    }}
+                    className="w-full px-4 py-3 rounded-lg border-2 border-gray-300 bg-white text-lg font-mono"
+                  >
+                    {extractedOptions.map((opt, idx) => (
+                      <option key={idx} value={opt.id}>
+                        {opt.id} — {opt.confidence}%
+                      </option>
+                    ))}
+                  </select>
                 </div>
               )}
 
-              {/* Upload Button */}
               <button
                 onClick={handleUpload}
-                disabled={isLoading || isExtracting || !file || !certificateId}
+                disabled={
+                  isLoading ||
+                  isExtracting ||
+                  !file ||
+                  !certificateId ||
+                  !isWalletConnected
+                }
                 className="mt-10 w-full py-5 px-8 bg-black text-white text-xl font-bold rounded-xl shadow-xl hover:shadow-2xl transform hover:-translate-y-1 transition-all disabled:opacity-60 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-3"
               >
                 {isLoading ? (
@@ -641,13 +616,12 @@ export default function UploadPage() {
                 )}
               </button>
 
-              {/* Status Message */}
               {message && (
                 <div
                   className={`mt-8 p-6 rounded-xl border-2 font-medium text-base shadow-sm ${
-                    message.includes("Success") || message.includes("issued")
+                    message.includes("Success") || message.includes("✅")
                       ? "bg-green-50 border-green-300 text-green-900"
-                      : message.includes("Error") || message.includes("failed")
+                      : message.includes("failed") || message.includes("❌")
                       ? "bg-red-50 border-red-300 text-red-900"
                       : "bg-gray-100 border-gray-400 text-black"
                   }`}
@@ -655,67 +629,6 @@ export default function UploadPage() {
                   <pre className="whitespace-pre-wrap">{message}</pre>
                 </div>
               )}
-            </div>
-
-            {/* === AI FEATURES SHOWCASE === */}
-            <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="bg-white p-6 rounded-2xl shadow-lg border border-gray-300 text-center">
-                <div className="text-5xl mb-3 text-black">Magnifying Glass</div>
-                <p className="text-lg font-bold text-black">Advanced OCR</p>
-                <p className="text-sm text-gray-600">Tesseract.js Engine</p>
-              </div>
-              <div className="bg-white p-6 rounded-2xl shadow-lg border border-gray-300 text-center">
-                <div className="text-5xl mb-3 text-black">Brain</div>
-                <p className="text-lg font-bold text-black">
-                  Smart Pattern Detection
-                </p>
-                <p className="text-sm text-gray-600">11+ ID Formats</p>
-              </div>
-              <div className="bg-white p-6 rounded-2xl shadow-lg border border-gray-300 text-center">
-                <div className="text-5xl mb-3 text-black">Chart</div>
-                <p className="text-lg font-bold text-black">
-                  Confidence Scoring
-                </p>
-                <p className="text-sm text-gray-600">AI‑Powered Accuracy</p>
-              </div>
-            </div>
-
-            {/* === TECHNICAL DETAILS === */}
-            <div className="mt-10">
-              <details className="bg-white rounded-2xl shadow-lg p-6 border border-gray-300">
-                <summary className="text-xl font-bold text-black cursor-pointer hover:text-gray-800 flex items-center justify-between">
-                  <span>Technical Details</span>
-                  <span className="ml-2 text-2xl">Down Arrow</span>
-                </summary>
-                <div className="mt-5 text-left text-base text-gray-700 space-y-3 leading-relaxed">
-                  <p>
-                    <strong className="text-black">OCR Engine:</strong>{" "}
-                    Tesseract.js with custom parameters
-                  </p>
-                  <p>
-                    <strong className="text-black">PDF Processing:</strong>{" "}
-                    First 2 pages at 2x resolution
-                  </p>
-                  <p>
-                    <strong className="text-black">Pattern Matching:</strong>{" "}
-                    11+ intelligent regex patterns
-                  </p>
-                  <p>
-                    <strong className="text-black">
-                      False Positive Filter:
-                    </strong>{" "}
-                    Removes common words
-                  </p>
-                  <p>
-                    <strong className="text-black">Blockchain:</strong>{" "}
-                    Immutable record via smart contract
-                  </p>
-                  <p>
-                    <strong className="text-black">Storage:</strong> IPFS +
-                    local backup
-                  </p>
-                </div>
-              </details>
             </div>
           </>
         )}
